@@ -18,7 +18,7 @@ interpreter = require './interpreter'
 
 module.exports = class Aether
   @execution: execution
-  @addGlobal: protectBuiltins.addGlobal  # Use before instantiating Aether instances
+  @addGlobal: protectBuiltins.addGlobal  # Call instance method version after instance creation to update existing global list
   @replaceBuiltin: protectBuiltins.replaceBuiltin
   @globals: protectBuiltins.addedGlobals
 
@@ -27,6 +27,11 @@ module.exports = class Aether
 
   getAddedGlobals: () ->
     protectBuiltins.addedGlobals
+
+  addGlobal: (name, value) ->
+    # Call class method version before instance creation to instantiate global list
+    if @esperEngine?
+      @esperEngine.addGlobal name, value
 
   constructor: (options) ->
     options ?= {}
@@ -43,6 +48,14 @@ module.exports = class Aether
 
     @setLanguage @options.language
     @allGlobals = @options.globals.concat protectBuiltins.builtinNames, Object.keys(@language.runtimeGlobals)  # After setLanguage, which can add globals.
+    #if statementStack[0]?
+    #  rng = statementStack[0].originalRange
+    #  aether.lastStatementRange = [rng.start, rng.end] if rng
+
+    Object.defineProperty @, 'lastStatementRange',
+      get: () -> 
+        rng = @esperEngine?.evaluator?.lastASTNodeProcessed?.originalRange
+        return [rng.start, rng.end] if rng
 
   # Language can be changed after construction. (It will reset Aether's state.)
   setLanguage: (language) ->
@@ -107,13 +120,7 @@ module.exports = class Aether
   transpile: (@raw) ->
     @reset()
     rawCode = @raw
-    if @options.simpleLoops
-      rawCode = _.cloneDeep @raw
-      [rawCode, @replacedLoops, loopProblems] = @language.replaceLoops rawCode
     @problems = @lint rawCode
-    loopProblems ?= []
-    if loopProblems.length > 0
-      @problems.warnings.push loopProblems...
     @pure = @purifyCode rawCode
     @pure
 
@@ -211,7 +218,7 @@ module.exports = class Aether
 
   transform: (code, transforms, parseFn) ->
     transformedCode = traversal.morphAST code, (_.bind t, @ for t in transforms), parseFn, @
-    transformedAST = parseFn transformedCode, @, true
+    transformedAST = parseFn transformedCode, @
     [transformedCode, transformedAST]
 
   @getFunctionBody: (func) ->
@@ -230,7 +237,11 @@ module.exports = class Aether
 
   getStatementCount: ->
     count = 0
-    root = @ast.body[0].body # We assume the 'code' is one function hanging inside the program.
+    if @language.usesFunctionWrapping()
+      root = @ast.body[0].body # We assume the 'code' is one function hanging inside the program.
+    else
+      root = @ast.body
+
     #console.log(JSON.stringify root, null, '  ')
     traversal.walkASTCorrect root, (node) ->
       return if not node.type?
